@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Agentnetes — Status</title>
-  <meta name="description" content="Public status page for the Agentnetes platform. Real-time component health, incident history, and post-incident reviews." />
+  <meta name="description" content="Live health for the Agentnetes platform — checked from your browser every 30 seconds." />
   <link rel="preconnect" href="https://rsms.me/" />
   <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
   <style>
@@ -18,7 +18,6 @@
       --ok: #00b093;
       --warn: #ecc94b;
       --bad: #8f485d;
-      --notice: #004968;
       --accent: #5ddac4;
     }
     * { box-sizing: border-box; }
@@ -37,6 +36,7 @@
     .pulse.ok { color: var(--ok); background: var(--ok); }
     .pulse.warn { color: var(--warn); background: var(--warn); }
     .pulse.bad { color: var(--bad); background: var(--bad); }
+    .pulse.unknown { color: var(--text-dim); background: var(--text-dim); animation: none; }
     @keyframes pulse {
       0%   { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
       80%  { box-shadow: 0 0 0 12px transparent; opacity: 0.6; }
@@ -48,13 +48,21 @@
     .components { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
     .component { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; border-bottom: 1px solid var(--border); }
     .component:last-child { border-bottom: none; }
+    .component-info { flex: 1; min-width: 0; }
     .component-name { font-weight: 500; font-size: 15px; }
     .component-desc { color: var(--text-dim); font-size: 13px; margin-top: 2px; }
-    .component-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); }
-    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .component-target { color: var(--text-dim); font-size: 11px; font-family: 'JetBrains Mono', ui-monospace, monospace; margin-top: 4px; word-break: break-all; }
+    .component-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); margin-left: 16px; flex-shrink: 0; text-align: right; }
+    .component-status-text { font-weight: 500; }
+    .component-status-text.ok { color: var(--ok); }
+    .component-status-text.warn { color: var(--warn); }
+    .component-status-text.bad { color: var(--bad); }
+    .component-latency { color: var(--text-dim); font-size: 11px; font-family: 'JetBrains Mono', ui-monospace, monospace; margin-top: 2px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     .dot.ok { background: var(--ok); }
     .dot.warn { background: var(--warn); }
     .dot.bad { background: var(--bad); }
+    .dot.unknown { background: var(--text-dim); }
     .incidents { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
     .incident { padding: 16px 0; border-bottom: 1px solid var(--border); }
     .incident:last-child { border-bottom: none; padding-bottom: 0; }
@@ -67,6 +75,7 @@
       .container { padding: 24px 16px; }
       .hero { padding: 24px; }
       .component { flex-direction: column; align-items: flex-start; gap: 8px; }
+      .component-status { margin-left: 0; text-align: left; }
     }
   </style>
 </head>
@@ -80,20 +89,18 @@
       <div class="meta">Status</div>
     </header>
 
-    <div class="hero" id="hero">
+    <div class="hero">
       <div class="hero-status">
-        <span class="pulse ok" id="hero-pulse"></span>
+        <span class="pulse unknown" id="hero-pulse"></span>
         <div>
-          <div class="hero-title" id="hero-title">All systems operational</div>
-          <div class="hero-sub" id="hero-sub">Last updated <span id="last-updated">—</span></div>
+          <div class="hero-title" id="hero-title">Checking&hellip;</div>
+          <div class="hero-sub">Last checked <span id="last-checked">&mdash;</span> &middot; next check in <span id="countdown">&mdash;</span>s</div>
         </div>
       </div>
     </div>
 
-    <h2>Components</h2>
-    <div class="components" id="components">
-      <!-- rendered from status.json -->
-    </div>
+    <h2>Components &mdash; checked live from your browser</h2>
+    <div class="components" id="components"></div>
 
     <h2>Recent incidents</h2>
     <div class="incidents" id="incidents">
@@ -103,108 +110,188 @@
     <footer>
       <div>
         <a href="https://agentnetes.io">agentnetes.io</a>
-        &nbsp;·&nbsp;
-        <a href="status.json">status.json</a>
-        &nbsp;·&nbsp;
+        &nbsp;&middot;&nbsp;
         <a href="https://github.com/Fiv21/agentnetes-status">source</a>
       </div>
-      <div>Updated every 60s.</div>
+      <div>Live probes every 30s. Each visitor's browser does its own checks.</div>
     </footer>
   </div>
 
   <script>
-    const STATUS_URL = "status.json";
-    const REFRESH_MS = 60_000;
+    // Each component is probed live from the browser. Targets are public
+    // health endpoints that respond fast and are safe to hit from any
+    // origin. We use mode:'no-cors' so a browser without CORS
+    // negotiation still gets a useful "did the request resolve" signal.
+    const COMPONENTS = [
+      {
+        name: "Mission Control API",
+        description: "Production cloud-service backing the desktop app.",
+        target: "https://app.agentnetes.io/api/v1/healthz",
+        timeoutMs: 5000,
+      },
+      {
+        name: "Auto-update feed",
+        description: "Signed binary distribution for desktop clients.",
+        target: "https://github.com/Fiv21/fv-mission-control/releases/latest/download/latest-mac.yml",
+        timeoutMs: 8000,
+      },
+      {
+        name: "Auth (Firebase)",
+        description: "Sign-in, token issuance, identity provider.",
+        target: "https://identitytoolkit.googleapis.com/v1/projects",
+        timeoutMs: 5000,
+      },
+      {
+        name: "Sync (cloud-service)",
+        description: "Cross-device state sync \u2014 vault, missions, tasks.",
+        target: "https://app.agentnetes.io/api/v1/healthz",
+        timeoutMs: 5000,
+      },
+      {
+        name: "Marketplace",
+        description: "Agent marketplace + subscription flow.",
+        target: "https://app.agentnetes.io/marketplace/agents",
+        timeoutMs: 5000,
+      },
+      {
+        name: "Stripe webhooks",
+        description: "Billing webhook ingest \u2014 Stripe API.",
+        target: "https://api.stripe.com/healthcheck",
+        timeoutMs: 5000,
+      },
+    ];
 
-    function statusToClass(s) {
-      switch ((s || "").toLowerCase()) {
-        case "operational": return "ok";
-        case "degraded":
-        case "partial":
-        case "monitoring":
-        case "investigating":
-        case "identified":
-          return "warn";
-        case "outage":
-        case "down":
-        case "major":
-          return "bad";
-        default: return "ok";
+    const INTERVAL_MS = 30000;
+    const SLOW_THRESHOLD_MS = 1500;
+
+    const state = COMPONENTS.map(function () { return { status: "unknown", latency: null, error: null, lastChecked: null }; });
+
+    async function probe(target, timeoutMs) {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+      const start = performance.now();
+      try {
+        // mode:'no-cors' lets us tell "did the request resolve" even when
+        // the response isn't CORS-readable. We can't read the body or
+        // status in opaque mode, but a successful fetch === server is up
+        // and accepting connections, which is the signal we want.
+        await fetch(target, { method: "GET", mode: "no-cors", cache: "no-store", signal: ctrl.signal });
+        const latency = Math.round(performance.now() - start);
+        if (latency > SLOW_THRESHOLD_MS) return { status: "warn", latency: latency, error: "slow" };
+        return { status: "ok", latency: latency, error: null };
+      } catch (err) {
+        const latency = Math.round(performance.now() - start);
+        if (err.name === "AbortError") return { status: "bad", latency: latency, error: "timeout" };
+        return { status: "bad", latency: latency, error: String(err.message || err) };
+      } finally {
+        clearTimeout(timeout);
       }
     }
 
-    function overallStatus(components) {
-      const states = components.map(c => (c.status || "operational").toLowerCase());
-      if (states.some(s => ["outage","down","major"].includes(s))) return { cls: "bad", text: "Major outage" };
-      if (states.some(s => ["degraded","partial","monitoring","investigating","identified"].includes(s))) return { cls: "warn", text: "Partial degradation" };
+    function overallStatus() {
+      const states = state.map(function (s) { return s.status; });
+      if (states.every(function (s) { return s === "unknown"; })) return { cls: "unknown", text: "Checking\u2026" };
+      if (states.some(function (s) { return s === "bad"; })) return { cls: "bad", text: "Major outage" };
+      if (states.some(function (s) { return s === "warn"; })) return { cls: "warn", text: "Partial degradation" };
       return { cls: "ok", text: "All systems operational" };
     }
 
-    function fmtTime(iso) {
-      if (!iso) return "—";
-      const d = new Date(iso);
-      return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-    }
-
-    async function render() {
-      try {
-        const r = await fetch(STATUS_URL + "?t=" + Date.now(), { cache: "no-store" });
-        if (!r.ok) throw new Error(`status.json HTTP ${r.status}`);
-        const data = await r.json();
-        const components = Array.isArray(data.components) ? data.components : [];
-        const incidents = Array.isArray(data.incidents) ? data.incidents : [];
-
-        // Hero
-        const overall = overallStatus(components);
-        document.getElementById("hero-pulse").className = "pulse " + overall.cls;
-        document.getElementById("hero-title").textContent = overall.text;
-        document.getElementById("last-updated").textContent = fmtTime(data.updated_at) || "—";
-
-        // Components
-        const cmpEl = document.getElementById("components");
-        cmpEl.innerHTML = components.map(c => `
-          <div class="component">
-            <div>
-              <div class="component-name">${escapeHtml(c.name)}</div>
-              ${c.description ? `<div class="component-desc">${escapeHtml(c.description)}</div>` : ""}
-            </div>
-            <div class="component-status">
-              <span class="dot ${statusToClass(c.status)}"></span>
-              <span>${escapeHtml(prettyStatus(c.status))}</span>
-            </div>
-          </div>
-        `).join("");
-
-        // Incidents
-        const incEl = document.getElementById("incidents");
-        if (incidents.length === 0) {
-          incEl.innerHTML = `<div class="empty">No incidents reported.</div>`;
-        } else {
-          incEl.innerHTML = incidents.map(i => `
-            <div class="incident">
-              <div class="incident-when">${fmtTime(i.created_at)} · ${escapeHtml(i.severity || "SEV3")}</div>
-              <div class="incident-title">${escapeHtml(i.title)}</div>
-              ${i.message ? `<div class="component-desc" style="margin-top:4px">${escapeHtml(i.message)}</div>` : ""}
-            </div>
-          `).join("");
-        }
-      } catch (err) {
-        console.error("status render failed:", err);
-        document.getElementById("hero-title").textContent = "Status unavailable";
-        document.getElementById("hero-sub").textContent = "Could not load status.json — check back shortly.";
+    function renderHero() {
+      const o = overallStatus();
+      document.getElementById("hero-pulse").className = "pulse " + o.cls;
+      document.getElementById("hero-title").textContent = o.text;
+      const stamps = state.filter(function (s) { return s.lastChecked; }).map(function (s) { return s.lastChecked; });
+      if (stamps.length) {
+        const newest = new Date(Math.max.apply(null, stamps));
+        document.getElementById("last-checked").textContent = newest.toLocaleTimeString();
       }
     }
 
-    function prettyStatus(s) {
-      const x = (s || "operational").toLowerCase();
-      return x.charAt(0).toUpperCase() + x.slice(1);
-    }
-    function escapeHtml(s) {
-      return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    function renderComponents() {
+      document.getElementById("components").innerHTML = COMPONENTS.map(function (c, i) {
+        const s = state[i];
+        const cls = s.status;
+        const label = ({ ok: "Operational", warn: "Degraded", bad: "Down", unknown: "Checking\u2026" })[s.status] || "Unknown";
+        const latency = s.latency != null ? (s.latency + "ms") : "\u2014";
+        return [
+          '<div class="component">',
+          '  <div class="component-info">',
+          '    <div class="component-name">' + escapeHtml(c.name) + '</div>',
+          '    <div class="component-desc">' + escapeHtml(c.description) + '</div>',
+          '    <div class="component-target">' + escapeHtml(c.target) + (s.error ? ' &middot; ' + escapeHtml(s.error) : '') + '</div>',
+          '  </div>',
+          '  <div class="component-status">',
+          '    <span class="dot ' + cls + '"></span>',
+          '    <div>',
+          '      <div class="component-status-text ' + cls + '">' + label + '</div>',
+          '      <div class="component-latency">' + latency + '</div>',
+          '    </div>',
+          '  </div>',
+          '</div>'
+        ].join("");
+      }).join("");
     }
 
-    render();
-    setInterval(render, REFRESH_MS);
+    function escapeHtml(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+        return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+      });
+    }
+
+    async function checkAll() {
+      await Promise.allSettled(
+        COMPONENTS.map(async function (c, i) {
+          const r = await probe(c.target, c.timeoutMs);
+          state[i] = Object.assign({}, r, { lastChecked: Date.now() });
+          renderComponents();
+          renderHero();
+        })
+      );
+    }
+
+    let nextCheckAt = 0;
+    function tick() {
+      const remaining = Math.max(0, Math.ceil((nextCheckAt - Date.now()) / 1000));
+      document.getElementById("countdown").textContent = remaining;
+    }
+
+    async function loop() {
+      while (true) {
+        nextCheckAt = Date.now() + INTERVAL_MS;
+        await checkAll();
+        while (Date.now() < nextCheckAt) {
+          await new Promise(function (r) { setTimeout(r, 1000); });
+        }
+      }
+    }
+
+    async function loadIncidents() {
+      try {
+        const r = await fetch("incidents.json?t=" + Date.now(), { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const incidents = await r.json();
+        const el = document.getElementById("incidents");
+        if (!incidents.length) {
+          el.innerHTML = '<div class="empty">No incidents reported.</div>';
+          return;
+        }
+        el.innerHTML = incidents.map(function (i) {
+          return [
+            '<div class="incident">',
+            '  <div class="incident-when">' + new Date(i.created_at).toLocaleString() + ' &middot; ' + escapeHtml(i.severity || "SEV3") + '</div>',
+            '  <div class="incident-title">' + escapeHtml(i.title) + '</div>',
+            (i.message ? '  <div class="component-desc" style="margin-top:4px">' + escapeHtml(i.message) + '</div>' : ''),
+            '</div>'
+          ].join("");
+        }).join("");
+      } catch (e) { /* not fatal */ }
+    }
+
+    renderComponents();
+    setInterval(tick, 1000);
+    loadIncidents();
+    setInterval(loadIncidents, 60000);
+    loop();
   </script>
 </body>
 </html>
