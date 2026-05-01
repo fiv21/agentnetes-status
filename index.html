@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Agentnetes — Status</title>
-  <meta name="description" content="Live health for the Agentnetes platform — checked from your browser every 30 seconds." />
+  <meta name="description" content="Live health for the Agentnetes platform — server-side probes every 60 seconds." />
   <link rel="preconnect" href="https://rsms.me/" />
   <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
   <style>
@@ -93,14 +93,16 @@
       <div class="hero-status">
         <span class="pulse unknown" id="hero-pulse"></span>
         <div>
-          <div class="hero-title" id="hero-title">Checking&hellip;</div>
-          <div class="hero-sub">Last checked <span id="last-checked">&mdash;</span> &middot; next check in <span id="countdown">&mdash;</span>s</div>
+          <div class="hero-title" id="hero-title">Loading&hellip;</div>
+          <div class="hero-sub">Probed <span id="probed-at">&mdash;</span> &middot; refreshed every <span id="poll-interval">10</span>s</div>
         </div>
       </div>
     </div>
 
-    <h2>Components &mdash; checked live from your browser</h2>
-    <div class="components" id="components"></div>
+    <h2>Components &mdash; probed server-side every 60s</h2>
+    <div class="components" id="components">
+      <div class="empty">Loading&hellip;</div>
+    </div>
 
     <h2>Recent incidents</h2>
     <div class="incidents" id="incidents">
@@ -112,156 +114,92 @@
         <a href="https://agentnetes.io">agentnetes.io</a>
         &nbsp;&middot;&nbsp;
         <a href="https://github.com/Fiv21/agentnetes-status">source</a>
+        &nbsp;&middot;&nbsp;
+        <a id="snapshot-link" href="https://storage.googleapis.com/agentnetes-status-public/status.json">snapshot</a>
       </div>
-      <div>Live probes every 30s. Each visitor's browser does its own checks.</div>
+      <div>Server-side probes via Cloud Function + Cloud Scheduler.</div>
     </footer>
   </div>
 
   <script>
-    // Each component is probed live from the browser. Targets are public
-    // health endpoints that respond fast and are safe to hit from any
-    // origin. We use mode:'no-cors' so a browser without CORS
-    // negotiation still gets a useful "did the request resolve" signal.
-    const COMPONENTS = [
-      {
-        name: "Mission Control API",
-        description: "Production cloud-service backing the desktop app.",
-        target: "https://app.agentnetes.io/api/v1/healthz",
-        timeoutMs: 5000,
-      },
-      {
-        name: "Auto-update feed",
-        description: "Signed binary distribution for desktop clients.",
-        target: "https://github.com/Fiv21/fv-mission-control/releases/latest/download/latest-mac.yml",
-        timeoutMs: 8000,
-      },
-      {
-        name: "Auth (Firebase)",
-        description: "Sign-in, token issuance, identity provider.",
-        target: "https://identitytoolkit.googleapis.com/v1/projects",
-        timeoutMs: 5000,
-      },
-      {
-        name: "Sync (cloud-service)",
-        description: "Cross-device state sync \u2014 vault, missions, tasks.",
-        target: "https://app.agentnetes.io/api/v1/healthz",
-        timeoutMs: 5000,
-      },
-      {
-        name: "Marketplace",
-        description: "Agent marketplace + subscription flow.",
-        target: "https://app.agentnetes.io/marketplace/agents",
-        timeoutMs: 5000,
-      },
-      {
-        name: "Stripe webhooks",
-        description: "Billing webhook ingest \u2014 Stripe API.",
-        target: "https://api.stripe.com/healthcheck",
-        timeoutMs: 5000,
-      },
-    ];
+    // The status snapshot is produced by a server-side prober (Cloud
+    // Function "status-probe" triggered by Cloud Scheduler every 60s)
+    // and uploaded to a public GCS bucket. The page just reads the
+    // snapshot — no per-visitor amplification on the production
+    // endpoints during incidents, and we get real HTTP status codes
+    // since the prober isn't constrained by browser CORS.
+    const SNAPSHOT_URL = "https://storage.googleapis.com/agentnetes-status-public/status.json";
+    const POLL_MS = 10000; // page polls the snapshot every 10s; the snapshot itself updates every 60s
 
-    const INTERVAL_MS = 30000;
-    const SLOW_THRESHOLD_MS = 1500;
-
-    const state = COMPONENTS.map(function () { return { status: "unknown", latency: null, error: null, lastChecked: null }; });
-
-    async function probe(target, timeoutMs) {
-      const ctrl = new AbortController();
-      const timeout = setTimeout(function () { ctrl.abort(); }, timeoutMs);
-      const start = performance.now();
-      try {
-        // mode:'no-cors' lets us tell "did the request resolve" even when
-        // the response isn't CORS-readable. We can't read the body or
-        // status in opaque mode, but a successful fetch === server is up
-        // and accepting connections, which is the signal we want.
-        await fetch(target, { method: "GET", mode: "no-cors", cache: "no-store", signal: ctrl.signal });
-        const latency = Math.round(performance.now() - start);
-        if (latency > SLOW_THRESHOLD_MS) return { status: "warn", latency: latency, error: "slow" };
-        return { status: "ok", latency: latency, error: null };
-      } catch (err) {
-        const latency = Math.round(performance.now() - start);
-        if (err.name === "AbortError") return { status: "bad", latency: latency, error: "timeout" };
-        return { status: "bad", latency: latency, error: String(err.message || err) };
-      } finally {
-        clearTimeout(timeout);
+    function statusToClass(s) {
+      switch ((s || "").toLowerCase()) {
+        case "ok": case "operational": return "ok";
+        case "warn": case "degraded": case "partial": return "warn";
+        case "bad": case "outage": case "down": case "major": return "bad";
+        default: return "unknown";
       }
     }
-
-    function overallStatus() {
-      const states = state.map(function (s) { return s.status; });
-      if (states.every(function (s) { return s === "unknown"; })) return { cls: "unknown", text: "Checking\u2026" };
-      if (states.some(function (s) { return s === "bad"; })) return { cls: "bad", text: "Major outage" };
-      if (states.some(function (s) { return s === "warn"; })) return { cls: "warn", text: "Partial degradation" };
-      return { cls: "ok", text: "All systems operational" };
-    }
-
-    function renderHero() {
-      const o = overallStatus();
-      document.getElementById("hero-pulse").className = "pulse " + o.cls;
-      document.getElementById("hero-title").textContent = o.text;
-      const stamps = state.filter(function (s) { return s.lastChecked; }).map(function (s) { return s.lastChecked; });
-      if (stamps.length) {
-        const newest = new Date(Math.max.apply(null, stamps));
-        document.getElementById("last-checked").textContent = newest.toLocaleTimeString();
+    function statusToLabel(s) {
+      switch ((s || "").toLowerCase()) {
+        case "ok": return "Operational";
+        case "warn": return "Degraded";
+        case "bad": return "Down";
+        default: return "Unknown";
       }
     }
-
-    function renderComponents() {
-      document.getElementById("components").innerHTML = COMPONENTS.map(function (c, i) {
-        const s = state[i];
-        const cls = s.status;
-        const label = ({ ok: "Operational", warn: "Degraded", bad: "Down", unknown: "Checking\u2026" })[s.status] || "Unknown";
-        const latency = s.latency != null ? (s.latency + "ms") : "\u2014";
-        return [
-          '<div class="component">',
-          '  <div class="component-info">',
-          '    <div class="component-name">' + escapeHtml(c.name) + '</div>',
-          '    <div class="component-desc">' + escapeHtml(c.description) + '</div>',
-          '    <div class="component-target">' + escapeHtml(c.target) + (s.error ? ' &middot; ' + escapeHtml(s.error) : '') + '</div>',
-          '  </div>',
-          '  <div class="component-status">',
-          '    <span class="dot ' + cls + '"></span>',
-          '    <div>',
-          '      <div class="component-status-text ' + cls + '">' + label + '</div>',
-          '      <div class="component-latency">' + latency + '</div>',
-          '    </div>',
-          '  </div>',
-          '</div>'
-        ].join("");
-      }).join("");
+    function overallToClass(s) {
+      switch ((s || "").toLowerCase()) {
+        case "operational": return { cls: "ok", text: "All systems operational" };
+        case "degraded": return { cls: "warn", text: "Partial degradation" };
+        case "outage": return { cls: "bad", text: "Major outage" };
+        default: return { cls: "unknown", text: "Unknown" };
+      }
     }
-
     function escapeHtml(s) {
       return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
         return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
       });
     }
 
-    async function checkAll() {
-      await Promise.allSettled(
-        COMPONENTS.map(async function (c, i) {
-          const r = await probe(c.target, c.timeoutMs);
-          state[i] = Object.assign({}, r, { lastChecked: Date.now() });
-          renderComponents();
-          renderHero();
-        })
-      );
-    }
-
-    let nextCheckAt = 0;
-    function tick() {
-      const remaining = Math.max(0, Math.ceil((nextCheckAt - Date.now()) / 1000));
-      document.getElementById("countdown").textContent = remaining;
-    }
-
-    async function loop() {
-      while (true) {
-        nextCheckAt = Date.now() + INTERVAL_MS;
-        await checkAll();
-        while (Date.now() < nextCheckAt) {
-          await new Promise(function (r) { setTimeout(r, 1000); });
+    async function loadSnapshot() {
+      try {
+        const r = await fetch(SNAPSHOT_URL + "?t=" + Date.now(), { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const data = await r.json();
+        const overall = overallToClass(data.overall);
+        document.getElementById("hero-pulse").className = "pulse " + overall.cls;
+        document.getElementById("hero-title").textContent = overall.text;
+        if (data.probed_at) {
+          document.getElementById("probed-at").textContent = new Date(data.probed_at).toLocaleString();
         }
+        const components = Array.isArray(data.components) ? data.components : [];
+        document.getElementById("components").innerHTML = components.map(function (c) {
+          const cls = statusToClass(c.status);
+          const label = statusToLabel(c.status);
+          const latency = c.latency != null ? (c.latency + "ms") : "\u2014";
+          const httpCode = c.httpStatus != null ? (" \u00b7 HTTP " + c.httpStatus) : "";
+          const errSuffix = c.error ? (" \u00b7 " + c.error) : "";
+          return [
+            '<div class="component">',
+            '  <div class="component-info">',
+            '    <div class="component-name">' + escapeHtml(c.name) + '</div>',
+            '    <div class="component-desc">' + escapeHtml(c.description || "") + '</div>',
+            '    <div class="component-target">' + escapeHtml(c.target) + escapeHtml(httpCode + errSuffix) + '</div>',
+            '  </div>',
+            '  <div class="component-status">',
+            '    <span class="dot ' + cls + '"></span>',
+            '    <div>',
+            '      <div class="component-status-text ' + cls + '">' + label + '</div>',
+            '      <div class="component-latency">' + latency + '</div>',
+            '    </div>',
+            '  </div>',
+            '</div>'
+          ].join("");
+        }).join("");
+      } catch (err) {
+        console.error("snapshot load failed:", err);
+        document.getElementById("hero-title").textContent = "Status snapshot unavailable";
+        document.getElementById("hero-pulse").className = "pulse unknown";
       }
     }
 
@@ -287,11 +225,11 @@
       } catch (e) { /* not fatal */ }
     }
 
-    renderComponents();
-    setInterval(tick, 1000);
+    document.getElementById("poll-interval").textContent = String(POLL_MS / 1000);
+    loadSnapshot();
     loadIncidents();
+    setInterval(loadSnapshot, POLL_MS);
     setInterval(loadIncidents, 60000);
-    loop();
   </script>
 </body>
 </html>

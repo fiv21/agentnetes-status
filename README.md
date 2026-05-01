@@ -2,36 +2,46 @@
 
 Live health for the Agentnetes platform at <https://status.agentnetes.io>.
 
-Each visitor's browser probes every component endpoint every 30 seconds. No backend, no polling cron, no static-snapshot lag.
+A server-side prober runs once per minute against the 6 component endpoints and writes a snapshot to a public GCS bucket; the page polls the snapshot every 10s and renders it. No per-visitor amplification on the production endpoints during an incident.
 
 ## Architecture
 
-- `index.html` — vanilla HTML/CSS/JS. Probes 6 endpoints in parallel via `fetch(..., { mode: "no-cors" })`. Slow (>1.5s) is yellow; failed/timed-out is red; otherwise green.
-- `incidents.json` — manually-curated incident list. Drop in entries when something goes sideways; the page renders the most recent first.
-- `CNAME` — binds GitHub Pages to `status.agentnetes.io`.
+```
+Cloud Scheduler (every 60s)
+  └─ Cloud Function "status-probe" (Node 22, 256MB, max-instances 1)
+       └─ HTTP-probes 6 endpoints in parallel
+            └─ writes JSON to gs://agentnetes-status-public/status.json (public-read, 30s cache)
 
-## Why client-side probes
+Browser at status.agentnetes.io
+  └─ polls https://storage.googleapis.com/agentnetes-status-public/status.json (every 10s)
+       └─ renders the snapshot
+```
 
-A static-snapshot page (Statuspage / Instatus / a JSON committed to a repo every 5 min) reports stale state. A page that hits the actual endpoints from each visitor's browser tells you whether the platform is responding *right now*, from where the user is. Fast to roll out, free, and survives any backend going down.
-
-The tradeoff: opaque (`no-cors`) responses don't expose the HTTP status code, so a 500 looks identical to a 200. We mitigate by setting tight per-target timeouts (5s default, 8s for GitHub releases). A network failure or timeout flips the dot red; a successful resolution flips it green.
-
-## Components and targets
-
-| Component | Target |
+| File | Purpose |
 |---|---|
-| Mission Control API | `https://app.agentnetes.io/api/v1/healthz` |
-| Auto-update feed | `https://github.com/Fiv21/fv-mission-control/releases/latest/download/latest-mac.yml` |
-| Auth (Firebase) | `https://identitytoolkit.googleapis.com/v1/projects` |
-| Sync (cloud-service) | `https://app.agentnetes.io/api/v1/healthz` |
-| Marketplace | `https://app.agentnetes.io/marketplace/agents` |
-| Stripe webhooks | `https://api.stripe.com/healthcheck` |
+| `index.html` | Page itself; vanilla HTML/CSS/JS, no build step |
+| `incidents.json` | Manually-curated incident list, polled every 60s |
+| `CNAME` | Binds GitHub Pages to `status.agentnetes.io` |
 
-To add or change a target, edit the `COMPONENTS` array at the top of the `<script>` block in `index.html`. Push to `main`; GitHub Pages rebuilds in ~30s.
+The probe function source lives at `<repo>/cmd/status-probe/` of the main repo (deployed via `gcloud functions deploy status-probe`).
+
+## Why server-side probes
+
+A page that probes from the browser amplifies load N× during an actual outage (every concerned visitor pings the failing API). Server-side probing keeps load constant: 6 probes per minute regardless of visitor count, and the snapshot is served from Google's CDN.
+
+The probe also reads real HTTP status codes (no CORS constraint), so we can tell a 500 from a 200 — something browser-side `mode: "no-cors"` can't do.
+
+## Refresh granularity
+
+- **Probe frequency:** every 60s (Cloud Scheduler's minimum). Free tier covers it.
+- **Snapshot upload:** within ~2s of each probe.
+- **Page poll:** every 10s. Snapshot CDN cache is 30s, so the page may show data up to 40s old at any instant.
+
+For sub-1s freshness you'd need a long-running container. Industry norm is 60s; Statuspage's free tier is also 60s.
 
 ## Posting an incident
 
-Edit `incidents.json`:
+Edit `incidents.json` in this repo:
 
 ```json
 [
@@ -46,11 +56,16 @@ Edit `incidents.json`:
 
 Push. The page polls `incidents.json` every 60s.
 
-## Why GitHub Pages and not Instatus
+## Manually triggering a probe
 
-Instatus's free tier doesn't allow custom domains; their Hobby tier is $20+/mo. GitHub Pages on a public repo is free, has Let's Encrypt out of the box, and gives us full control over the design.
+Cloud Scheduler runs the probe automatically. To force-refresh between schedule ticks:
 
-## Future automation
+```bash
+curl https://us-central1-a8s-mission-control.cloudfunctions.net/status-probe
+```
 
-- Cloud Monitoring webhook → small handler that POSTs an updated `incidents.json` here when a 5xx-rate / p99 / uptime alert fires
-- Per-component uptime stats sourced from GCP Monitoring metrics
+The function is `--allow-unauthenticated` because the GCS write is its only effect and the response is non-sensitive (`{ ok, overall, took_ms }`).
+
+## Why not Instatus
+
+Free tier doesn't allow custom domains; Hobby is $20/mo. This setup is $0.
