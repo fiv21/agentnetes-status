@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Agentnetes — Status</title>
+  <meta name="description" content="Public status page for the Agentnetes platform. Real-time component health, incident history, and post-incident reviews." />
+  <link rel="preconnect" href="https://rsms.me/" />
+  <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+  <style>
+    :root {
+      --bg: #0b0d12;
+      --surface: #131820;
+      --surface-2: #1a212c;
+      --border: #232a36;
+      --text: #e6edf3;
+      --text-dim: #94a3b8;
+      --ok: #00b093;
+      --warn: #ecc94b;
+      --bad: #8f485d;
+      --notice: #004968;
+      --accent: #5ddac4;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .container { max-width: 760px; margin: 0 auto; padding: 48px 24px; }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 48px; }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: 18px; letter-spacing: 0.02em; }
+    .brand-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+    .brand-name { letter-spacing: 0.18em; }
+    .meta { color: var(--text-dim); font-size: 13px; }
+    .hero { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 32px; margin-bottom: 32px; }
+    .hero-status { display: flex; align-items: center; gap: 16px; }
+    .pulse { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 0 currentColor; animation: pulse 2s ease-out infinite; }
+    .pulse.ok { color: var(--ok); background: var(--ok); }
+    .pulse.warn { color: var(--warn); background: var(--warn); }
+    .pulse.bad { color: var(--bad); background: var(--bad); }
+    @keyframes pulse {
+      0%   { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+      80%  { box-shadow: 0 0 0 12px transparent; opacity: 0.6; }
+      100% { box-shadow: 0 0 0 0 transparent; opacity: 1; }
+    }
+    .hero-title { font-size: 22px; font-weight: 600; }
+    .hero-sub { color: var(--text-dim); font-size: 14px; margin-top: 4px; }
+    h2 { font-size: 12px; font-weight: 600; letter-spacing: 0.18em; color: var(--text-dim); text-transform: uppercase; margin: 32px 0 12px; }
+    .components { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+    .component { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; border-bottom: 1px solid var(--border); }
+    .component:last-child { border-bottom: none; }
+    .component-name { font-weight: 500; font-size: 15px; }
+    .component-desc { color: var(--text-dim); font-size: 13px; margin-top: 2px; }
+    .component-status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .dot.ok { background: var(--ok); }
+    .dot.warn { background: var(--warn); }
+    .dot.bad { background: var(--bad); }
+    .incidents { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+    .incident { padding: 16px 0; border-bottom: 1px solid var(--border); }
+    .incident:last-child { border-bottom: none; padding-bottom: 0; }
+    .incident:first-child { padding-top: 0; }
+    .incident-when { color: var(--text-dim); font-size: 12px; margin-bottom: 4px; }
+    .incident-title { font-weight: 500; }
+    .empty { color: var(--text-dim); font-size: 14px; text-align: center; padding: 24px 0; }
+    footer { margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 12px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+    @media (max-width: 480px) {
+      .container { padding: 24px 16px; }
+      .hero { padding: 24px; }
+      .component { flex-direction: column; align-items: flex-start; gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">AGENTNETES</span>
+      </div>
+      <div class="meta">Status</div>
+    </header>
+
+    <div class="hero" id="hero">
+      <div class="hero-status">
+        <span class="pulse ok" id="hero-pulse"></span>
+        <div>
+          <div class="hero-title" id="hero-title">All systems operational</div>
+          <div class="hero-sub" id="hero-sub">Last updated <span id="last-updated">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <h2>Components</h2>
+    <div class="components" id="components">
+      <!-- rendered from status.json -->
+    </div>
+
+    <h2>Recent incidents</h2>
+    <div class="incidents" id="incidents">
+      <div class="empty">No incidents reported.</div>
+    </div>
+
+    <footer>
+      <div>
+        <a href="https://agentnetes.io">agentnetes.io</a>
+        &nbsp;·&nbsp;
+        <a href="status.json">status.json</a>
+        &nbsp;·&nbsp;
+        <a href="https://github.com/Fiv21/agentnetes-status">source</a>
+      </div>
+      <div>Updated every 60s.</div>
+    </footer>
+  </div>
+
+  <script>
+    const STATUS_URL = "status.json";
+    const REFRESH_MS = 60_000;
+
+    function statusToClass(s) {
+      switch ((s || "").toLowerCase()) {
+        case "operational": return "ok";
+        case "degraded":
+        case "partial":
+        case "monitoring":
+        case "investigating":
+        case "identified":
+          return "warn";
+        case "outage":
+        case "down":
+        case "major":
+          return "bad";
+        default: return "ok";
+      }
+    }
+
+    function overallStatus(components) {
+      const states = components.map(c => (c.status || "operational").toLowerCase());
+      if (states.some(s => ["outage","down","major"].includes(s))) return { cls: "bad", text: "Major outage" };
+      if (states.some(s => ["degraded","partial","monitoring","investigating","identified"].includes(s))) return { cls: "warn", text: "Partial degradation" };
+      return { cls: "ok", text: "All systems operational" };
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    }
+
+    async function render() {
+      try {
+        const r = await fetch(STATUS_URL + "?t=" + Date.now(), { cache: "no-store" });
+        if (!r.ok) throw new Error(`status.json HTTP ${r.status}`);
+        const data = await r.json();
+        const components = Array.isArray(data.components) ? data.components : [];
+        const incidents = Array.isArray(data.incidents) ? data.incidents : [];
+
+        // Hero
+        const overall = overallStatus(components);
+        document.getElementById("hero-pulse").className = "pulse " + overall.cls;
+        document.getElementById("hero-title").textContent = overall.text;
+        document.getElementById("last-updated").textContent = fmtTime(data.updated_at) || "—";
+
+        // Components
+        const cmpEl = document.getElementById("components");
+        cmpEl.innerHTML = components.map(c => `
+          <div class="component">
+            <div>
+              <div class="component-name">${escapeHtml(c.name)}</div>
+              ${c.description ? `<div class="component-desc">${escapeHtml(c.description)}</div>` : ""}
+            </div>
+            <div class="component-status">
+              <span class="dot ${statusToClass(c.status)}"></span>
+              <span>${escapeHtml(prettyStatus(c.status))}</span>
+            </div>
+          </div>
+        `).join("");
+
+        // Incidents
+        const incEl = document.getElementById("incidents");
+        if (incidents.length === 0) {
+          incEl.innerHTML = `<div class="empty">No incidents reported.</div>`;
+        } else {
+          incEl.innerHTML = incidents.map(i => `
+            <div class="incident">
+              <div class="incident-when">${fmtTime(i.created_at)} · ${escapeHtml(i.severity || "SEV3")}</div>
+              <div class="incident-title">${escapeHtml(i.title)}</div>
+              ${i.message ? `<div class="component-desc" style="margin-top:4px">${escapeHtml(i.message)}</div>` : ""}
+            </div>
+          `).join("");
+        }
+      } catch (err) {
+        console.error("status render failed:", err);
+        document.getElementById("hero-title").textContent = "Status unavailable";
+        document.getElementById("hero-sub").textContent = "Could not load status.json — check back shortly.";
+      }
+    }
+
+    function prettyStatus(s) {
+      const x = (s || "operational").toLowerCase();
+      return x.charAt(0).toUpperCase() + x.slice(1);
+    }
+    function escapeHtml(s) {
+      return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    }
+
+    render();
+    setInterval(render, REFRESH_MS);
+  </script>
+</body>
+</html>
